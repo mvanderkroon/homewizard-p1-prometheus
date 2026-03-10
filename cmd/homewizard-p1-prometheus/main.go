@@ -23,6 +23,7 @@ type config struct {
 	Tick             uint64 `env:"TICK" envDefault:"10"`
 	Port             uint64 `env:"PORT" envDefault:"9898"`
 	InfluxDBHost     string `env:"INFLUXDB_HOST,required"`
+	InfluxDBToken    string `env:"INFLUXDB_TOKEN,required"`
 	InfluxDBOrg      string `env:"INFLUXDB_ORG,required"`
 	InfluxDBBucket   string `env:"INFLUXDB_BUCKET,required"`
 	InfluxDBUsername string `env:"INFLUXDB_USERNAME,required"`
@@ -77,7 +78,7 @@ func homeWizardsTask(cfg config, exporter exporter.Prometheus, influxdb api.Writ
 		AddField("TotalPowerImportT1Kwh", home.TotalPowerImportT1Kwh).
 		AddField("TotalPowerImportT2Kwh", home.TotalPowerImportT2Kwh).
 		AddField("TotalPowerExportT1Kwh", home.TotalPowerExportT1Kwh).
-		AddField("TotalPowerExportT2Kwh", home.TotalPowerExportT1Kwh).
+		AddField("otalPowerExportT2Kwh", home.TotalPowerExportT1Kwh).
 		AddField("ActivePowerW", home.ActivePowerW).
 		AddField("ActivePowerL1W", home.ActivePowerL1W).
 		AddField("ActivePowerL2W", home.ActivePowerL2W).
@@ -95,7 +96,7 @@ func homeWizardsTask(cfg config, exporter exporter.Prometheus, influxdb api.Writ
 func executeCronJob(cfg config) {
 	s := gocron.NewScheduler()
 	prometheus := exporter.Prometheus{}
-	client := influxdb2.NewClient(cfg.InfluxDBHost, "my-token")
+	client := influxdb2.NewClient(cfg.InfluxDBHost, cfg.InfluxDBToken)
 	// Use blocking write client for writes to desired bucket
 	influxdb := client.WriteAPIBlocking(cfg.InfluxDBOrg, cfg.InfluxDBBucket)
 	err := s.Every(cfg.Tick).Second().Do(homeWizardsTask, cfg, prometheus, influxdb)
