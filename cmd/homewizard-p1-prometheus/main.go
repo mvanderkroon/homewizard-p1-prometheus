@@ -78,7 +78,7 @@ func homeWizardsTask(cfg config, exporter exporter.Prometheus, influxdb api.Writ
 		AddField("TotalPowerImportT1Kwh", home.TotalPowerImportT1Kwh).
 		AddField("TotalPowerImportT2Kwh", home.TotalPowerImportT2Kwh).
 		AddField("TotalPowerExportT1Kwh", home.TotalPowerExportT1Kwh).
-		AddField("TotalPowerExportT2Kwh", home.TotalPowerExportT1Kwh).
+		AddField("TotalPowerExportT2Kwh", home.TotalPowerExportT2Kwh).
 		AddField("ActivePowerW", home.ActivePowerW).
 		AddField("ActivePowerL1W", home.ActivePowerL1W).
 		AddField("ActivePowerL2W", home.ActivePowerL2W).
