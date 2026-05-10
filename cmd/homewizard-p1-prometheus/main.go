@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/caarlos0/env"
@@ -30,6 +31,22 @@ type config struct {
 	InfluxDBPassword string `env:"INFLUXDB_PASSWORD,required"`
 }
 
+const (
+	// Exit after this many consecutive failed scrape+write cycles so
+	// kubelet restarts the pod. Catches stuck connections / stale ARP
+	// the process can't recover from in-place. ~5 min at default 10s tick.
+	maxConsecutiveFailures = 30
+	// /readyz returns 503 if the last end-to-end success is older than
+	// this. Should be > a few tick intervals so a single missed scrape
+	// doesn't flap readiness.
+	readinessStaleSeconds = 60
+)
+
+var (
+	lastSuccessUnix     atomic.Int64 // 0 = never
+	consecutiveFailures atomic.Int32
+)
+
 // Start the homewizard exporter
 func Start() {
 
@@ -47,9 +64,12 @@ func Start() {
 	finish := make(chan bool)
 
 	go func() {
-		http.Handle("/metrics", promhttp.Handler())
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
+		mux.HandleFunc("/healthz", handleHealthz)
+		mux.HandleFunc("/readyz", handleReadyz)
 		listenAddress := fmt.Sprintf("0.0.0.0:%d", cfg.Port)
-		err := http.ListenAndServe(listenAddress, nil)
+		err := http.ListenAndServe(listenAddress, mux)
 		if err != nil {
 			log.Fatalf("Error starting metrics server %+v\n", err)
 		}
@@ -62,10 +82,46 @@ func Start() {
 	<-finish
 }
 
+func handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintln(w, "ok")
+}
+
+func handleReadyz(w http.ResponseWriter, _ *http.Request) {
+	last := lastSuccessUnix.Load()
+	if last == 0 {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintln(w, "no successful scrape yet")
+		return
+	}
+	age := time.Now().Unix() - last
+	if age > readinessStaleSeconds {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintf(w, "stale: last scrape %ds ago\n", age)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "ok: last scrape %ds ago\n", age)
+}
+
+func recordSuccess() {
+	lastSuccessUnix.Store(time.Now().Unix())
+	consecutiveFailures.Store(0)
+}
+
+func recordFailure(err error) {
+	n := consecutiveFailures.Add(1)
+	log.Errorf("scrape/write failure %d/%d: %v", n, maxConsecutiveFailures, err)
+	if n >= maxConsecutiveFailures {
+		log.Fatalf("exiting after %d consecutive failures so kubelet can restart us", n)
+	}
+}
+
 func homeWizardsTask(cfg config, exporter exporter.Prometheus, influxdb api.WriteAPIBlocking) error {
 	client := homewizard.NewP1Client(cfg.Host)
 	home, err := client.Retrieve()
 	if err != nil {
+		recordFailure(fmt.Errorf("retrieve from meter: %w", err))
 		return err
 	}
 	exporter.SetData(home)
@@ -85,11 +141,12 @@ func homeWizardsTask(cfg config, exporter exporter.Prometheus, influxdb api.Writ
 		AddField("ActivePowerL3W", home.ActivePowerL3W).
 		AddField("TotalGasM3", home.TotalGasM3).
 		SetTime(time.Now())
-	err = influxdb.WritePoint(context.Background(), p)
-	if err != nil {
-		panic(err)
+	if err := influxdb.WritePoint(context.Background(), p); err != nil {
+		recordFailure(fmt.Errorf("write to influxdb: %w", err))
+		return err
 	}
 
+	recordSuccess()
 	return nil
 }
 
