@@ -23,12 +23,12 @@ type config struct {
 	Host             string `env:"HOST,required"`
 	Tick             uint64 `env:"TICK" envDefault:"10"`
 	Port             uint64 `env:"PORT" envDefault:"9898"`
-	InfluxDBHost     string `env:"INFLUXDB_HOST,required"`
-	InfluxDBToken    string `env:"INFLUXDB_TOKEN,required"`
-	InfluxDBOrg      string `env:"INFLUXDB_ORG,required"`
-	InfluxDBBucket   string `env:"INFLUXDB_BUCKET,required"`
-	InfluxDBUsername string `env:"INFLUXDB_USERNAME,required"`
-	InfluxDBPassword string `env:"INFLUXDB_PASSWORD,required"`
+	// Optional: with INFLUXDB_HOST unset the exporter only serves /metrics.
+	// When set, token, org and bucket are required too.
+	InfluxDBHost   string `env:"INFLUXDB_HOST"`
+	InfluxDBToken  string `env:"INFLUXDB_TOKEN"`
+	InfluxDBOrg    string `env:"INFLUXDB_ORG"`
+	InfluxDBBucket string `env:"INFLUXDB_BUCKET"`
 }
 
 const (
@@ -59,6 +59,9 @@ func Start() {
 	if err := env.Parse(&cfg); err != nil {
 		log.Fatalf("Error parsing environment variables %+v\n", err)
 
+	}
+	if cfg.InfluxDBHost != "" && (cfg.InfluxDBToken == "" || cfg.InfluxDBOrg == "" || cfg.InfluxDBBucket == "") {
+		log.Fatalf("INFLUXDB_HOST is set, so INFLUXDB_TOKEN, INFLUXDB_ORG and INFLUXDB_BUCKET are required")
 	}
 
 	finish := make(chan bool)
@@ -117,6 +120,8 @@ func recordFailure(err error) {
 	}
 }
 
+// homeWizardsTask scrapes the meter into the Prometheus gauges and, when
+// influxdb is non-nil, also pushes the reading to InfluxDB.
 func homeWizardsTask(cfg config, exporter exporter.Prometheus, influxdb api.WriteAPIBlocking) error {
 	client := homewizard.NewP1Client(cfg.Host)
 	home, err := client.Retrieve()
@@ -125,6 +130,11 @@ func homeWizardsTask(cfg config, exporter exporter.Prometheus, influxdb api.Writ
 		return err
 	}
 	exporter.SetData(home)
+
+	if influxdb == nil {
+		recordSuccess()
+		return nil
+	}
 
 	p := influxdb2.NewPointWithMeasurement("stat").
 		AddTag("SmrVersion", strconv.FormatInt(home.SmrVersion, 10)).
@@ -153,10 +163,17 @@ func homeWizardsTask(cfg config, exporter exporter.Prometheus, influxdb api.Writ
 func executeCronJob(cfg config) {
 	s := gocron.NewScheduler()
 	prometheus := exporter.Prometheus{}
-	client := influxdb2.NewClient(cfg.InfluxDBHost, cfg.InfluxDBToken)
-	// Use blocking write client for writes to desired bucket
-	influxdb := client.WriteAPIBlocking(cfg.InfluxDBOrg, cfg.InfluxDBBucket)
-	err := s.Every(cfg.Tick).Second().Do(homeWizardsTask, cfg, prometheus, influxdb)
+	var influxdb api.WriteAPIBlocking // nil: no InfluxDB push
+	if cfg.InfluxDBHost != "" {
+		client := influxdb2.NewClient(cfg.InfluxDBHost, cfg.InfluxDBToken)
+		// Use blocking write client for writes to desired bucket
+		influxdb = client.WriteAPIBlocking(cfg.InfluxDBOrg, cfg.InfluxDBBucket)
+	} else {
+		log.Info("INFLUXDB_HOST unset: serving /metrics only, not pushing to InfluxDB")
+	}
+	// A closure, not Do(fn, args...): gocron passes args via reflect, which
+	// panics on a nil interface (influxdb when INFLUXDB_HOST is unset).
+	err := s.Every(cfg.Tick).Second().Do(func() { _ = homeWizardsTask(cfg, prometheus, influxdb) })
 	if err != nil {
 		log.Errorf("Error executing cron job %+v\n", err)
 	}
