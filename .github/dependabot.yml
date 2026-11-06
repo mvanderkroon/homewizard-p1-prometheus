@@ -13,3 +13,14 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+  # Base images in the Dockerfile (digest-pinned; Dependabot bumps tag and
+  # digest together). Every merge to main is built in-cluster by the homelab
+  # image builder and rolled out by Flux image automation.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore(images)
+    labels:
+      - dependencies
